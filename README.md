@@ -1,8 +1,8 @@
 # ERP Satınalma & Stok Modülü — Teknik Değerlendirme Ödevi
 
-Bir üretim şirketi için **satınalma ve stok yönetimi** modülü: veri modeli, SQL sorguları, REST API, destek senaryosu analizi, yetkilendirme tasarımı ve yönetim dashboard'u.
+Bir su üretim şirketi için **satınalma ve stok yönetimi** modülü: veri modeli, SQL sorguları, REST API, destek senaryosu analizi, yetkilendirme tasarımı ve yönetim dashboard'u.
 
-**Teknolojiler:** SQL Server 2022 · ASP.NET Core 8 Web API · Dapper · Swagger
+**Teknolojiler:** SQL Server 2022 · ASP.NET Core 8 Web API · Veritabanu bağlantısı için Dapper · REST API testleri için Swagger kullanıldı
 
 ---
 
@@ -22,40 +22,67 @@ Bir üretim şirketi için **satınalma ve stok yönetimi** modülü: veri model
 
 ## 🚀 Kurulum
 
-**Gereksinimler:** SQL Server 2019+ (Express yeterli), .NET 8 SDK, Visual Studio 2022 (17.8+) veya VS Code
-
-1. **Veritabanı** — SSMS'te sırasıyla çalıştırın:
+1. **Veritabanı** 
    ```
    database/01_create_tables.sql   → Şema
    database/02_seed_data.sql       → Örnek veri (bir kez)
    database/05_dashboard_views.sql → Dashboard view'ları (isteğe bağlı)
    ```
 2. **Bağlantı** — `ErpPurchasing.API/appsettings.json` içindeki `ConnectionStrings:ErpDb` değerinde `Server=` kısmını kendi SQL Server adınızla değiştirin.
-3. **Çalıştırma** — Visual Studio'da `F5` veya:
-   ```
-   cd ErpPurchasing.API
-   dotnet run
-   ```
+3. **Çalıştırma** — Visual Studio
 4. **Test** — Tarayıcıda `https://localhost:<port>/swagger`
 
 ---
 
 ## 🏭 Senaryo ve varsayımlar
 
-Sakarya'da bir **su dolum fabrikası**. Hammadde olarak preform, kapak, etiket, streç film ve koli satın alıyor; mamul olarak 0,5 L ve 5 L şişe su üretiyor.
+Bu çalışmada bir üründen yola çıkarak tasarıma karar verildi.Ürün olarak plastik şişe su örnek alındı. Hammadde olarak preform, kapak, etiket, streç film ve koli satın alıyor; mamul olarak 0,5 L ve 5 L şişe su üretiyor.
 
-| # | Varsayım | Gerekçe |
-|---|---|---|
-| 1 | **Üretim modülü (reçete, iş emri) kapsam dışıdır.** Üretime malzeme çıkışı yalnızca bir stok hareket tipi olarak tutulur | Ödevin kapsamı satınalma ve stok |
-| 2 | **Çoklu depo** vardır: Hammadde Deposu ve Mamul Deposu | Gerçek fabrika yapısı; destek senaryosunda "başka depoya girmiş olabilir" ihtimali |
-| 3 | **Kısmi teslimat** desteklenir: Bir sipariş satırı birden fazla mal kabulle karşılanabilir | SQL Soru 3'ün ön koşulu |
-| 4 | Aynı ürün bir siparişte **birden fazla satırda** yer alabilir | Planlı bölünmüş teslimat (farklı teslim tarihleri) |
-| 5 | Her ürün **tek bir birimle** takip edilir (Adet, Koli, Kg, Rulo). **Birim dönüşümü kapsam dışıdır** | Basitlik; ürün ve birim kavramları ayrıştırıldı ("24'lü koli" bir üründür, birimi "Koli"dir) |
-| 6 | **Fazla teslimat kabul edilmez** (tolerans %0). Fazlası iade edilir | Tolerans yönetimi ileride eklenebilir |
-| 7 | Mal kabulün **Taslak → Onaylandı** akışı vardır. **Stok hareketi sadece onayda oluşur** | Depocu sayımı bitirmeden stoğa işlenmez |
-| 8 | Sipariş durumları: Açık · Kısmi Teslim · Tamamlandı · İptal · **Kapatıldı** (kısa kapama) | Durum her zaman miktarlardan türetilemez (örn. tedarikçi kalan 10 adedi göndermeyecek) |
-| 9 | Para birimi **TL**; çoklu döviz kapsam dışıdır | — |
-| 10 | Stok değerlemesi (dashboard) **ağırlıklı ortalama maliyet** ile yapılır | — |
+Aşağıdaki varsayımların her biri veritabanı tasarımını doğrudan etkiliyor.
+
+### 1. Üretim modülü kapsam dışıdır
+Case satınalma ve stok modülünü istiyor. Bu yüzden ürün reçetesi ("1 şişe su = 1 preform + 1 kapak + 1 etiket") ve iş emirleri tasarlanmadı. Ancak üretime verilen malzeme stoktan düştüğü için, bu işlem **"Üretime Çıkış"** adında bir stok hareket tipi olarak tutuluyor.
+*Sistemdeki karşılığı:* `StockTransactionType` tablosunda 2 numaralı tip.
+
+### 2. Birden fazla depo vardır
+Gerçek fabrikalarda hammadde ve mamul ayrı depolarda tutulabilir. Bu yüzden iki depo tanımlandı: **Hammadde Deposu** ve **Mamul Deposu**. Aynı kamyondan gelen mallar farklı depolara girebileceği için depo bilgisi mal kabulün başlığında değil, **her satırında** tutuluyor.
+*Sistemdeki karşılığı:* `Warehouse` tablosu, `GoodsReceiptLine.WarehouseId` ve `StockTransaction.WarehouseId` sütunları.
+Destek senaryosunda (Bölüm 4) "eksik görünen miktar başka bir depoya girilmiş olabilir" ihtimali bu tasarım sayesinde incelenebiliyor.
+
+### 3. Kısmi teslimat desteklenir
+10.000 adet preform sipariş edildiğinde tedarikçi önce 6.000, bir hafta sonra kalan 4.000 adedi getirebilir. Yani **bir sipariş satırı birden fazla mal kabulle** karşılanabilir. Bunun için her mal kabul satırı, hangi sipariş satırının karşılığı olduğunu bilir.
+*Sistemdeki karşılığı:* `GoodsReceiptLine.PurchaseOrderLineId` (sipariş satırı → mal kabul satırları: 1'e çok ilişki).
+*Neden önemli:* SQL Soru 3 ("henüz tamamen teslim edilmemiş siparişler") ancak bu bağlantı sayesinde cevaplanabiliyor.
+
+### 4. Aynı ürün bir siparişte birden fazla satırda yer alabilir
+Kısmi teslimattan farklı olarak bu durum **önceden planlanır**: "Preformların 5.000'ini bu hafta, 5.000'ini gelecek ay getir." Bunun için her satırın kendi teslim tarihi olmalıdır. Bu nedenle beklenen teslim tarihi sipariş başlığında değil, **satırda** tutuluyor.
+*Sistemdeki karşılığı:* `PurchaseOrderLine.ExpectedDeliveryDate`. Aynı siparişte aynı ürünü engelleyen bir kısıt **bilinçli olarak eklenmedi**.
+
+### 5. Her ürün tek bir birimle takip edilir
+Ürün ve birim farklı kavramlardır: **"0,5 L Su (24'lü)" bir üründür, birimi "Koli"dir.** "5 L Su" başka bir üründür, birimi "Adet"tir. Her ürünün tek bir birimi vardır; alış da stok da aynı birimle yapılır. "1 koli = 24 adet" gibi **birim dönüşümleri kapsam dışıdır**.
+*Sistemdeki karşılığı:* `Unit` tablosu (Adet, Koli, Kg, Rulo) ve `Item.UnitId`. Sipariş satırında ayrıca birim tutulmuyor, çünkü birim ürün kartından geliyor.
+
+### 6. Fazla teslimat kabul edilmez
+10.000 adet sipariş edilen bir ürün için tedarikçi 10.200 getirirse sistem fazlasını kabul etmez; depocu 10.000 olarak mal kabul yapar, fazlası tedarikçiye iade edilir. Bazı ERP'lerde ürün bazında bir tolerans yüzdesi tanımlanır; bu, ileride eklenebilecek bir iyileştirme olarak bırakıldı.
+*Sistemdeki karşılığı:* `GoodsReceiptValidator` sınıfı. Kontrol, eşzamanlı iki mal kabulün birlikte sınırı aşamaması için **kilit altında** (`UPDLOCK`) yapılıyor. Kural ihlalinde API **422** döndürüyor.
+
+### 7. Mal kabul önce taslak, sonra onaylı olur
+Depocu kamyondaki malları sayarken mal kabulü **Taslak** olarak kaydeder, sayım bitince **Onaylar**. **Stok hareketi sadece onay anında oluşur.** Böylece yarım kalmış bir sayım stoğu etkilemez.
+*Sistemdeki karşılığı:* `GoodsReceiptStatus` tablosu (1 = Taslak, 2 = Onaylandı) ve `POST /api/goods-receipts/{id}/approve` endpoint'i.
+*Neden önemli:* Bölüm 4'teki "100 sipariş, stokta 60 görünüyor" sorununun olası nedenlerinden biri, kalan 40 adedin mal kabulünün **taslakta kalmış** olmasıdır. Bu durum örnek veride canlı olarak kurgulandı.
+
+### 8. Siparişin durumları vardır
+Sipariş şu durumlardan birinde olur: **Açık → Kısmi Teslim → Tamamlandı**, ya da **İptal** / **Kapatıldı**.
+"Kapatıldı" durumu **kısa kapama** içindir: 10.000 sipariş edildi, 9.990 geldi ve tedarikçi kalan 10 adedi göndermeyecek. Miktarlara bakıldığında 10 adet eksik görünse de iş açısından sipariş bitmiştir. Bu yüzden durum her zaman miktarlardan hesaplanamaz, **ayrı bir alanda saklanır**.
+*Sistemdeki karşılığı:* `PurchaseOrderStatus` tablosu. Durumlar metin olarak değil, ayrı bir tabloda tutuluyor (normalizasyon: 'Açık' / 'Acik' gibi tutarsız girişler engelleniyor). İptal edilmiş veya kapatılmış siparişe mal kabul yapılamıyor.
+
+### 9. Para birimi TL'dir
+Tüm fiyat ve tutarlar Türk Lirası kabul edildi. Çoklu döviz ve kur yönetimi kapsam dışıdır.
+
+### 10. Stok değeri ağırlıklı ortalama maliyetle hesaplanır
+Dashboard'daki "Toplam stok değeri" için her ürünün **ortalama alış fiyatı** kullanıldı: Onaylı mal kabullerdeki miktarlar ve sipariş fiyatları üzerinden hesaplanıyor.
+*Örnek:* 245 kg streç film × 85 TL = 20.825 TL.
+*Sistemdeki karşılığı:* `vw_StockValue` view'ı. FIFO gibi farklı değerleme yöntemleri şirketin muhasebe politikasına göre seçilebilir.
 
 ---
 
@@ -65,7 +92,7 @@ Sakarya'da bir **su dolum fabrikası**. Hammadde olarak preform, kapak, etiket, 
 | Karar | Gerekçe |
 |---|---|
 | **Stok miktarı bir sütunda tutulmaz**, `StockTransaction` hareketlerinin toplamıdır (ledger) | Türetilmiş veri saklanmaz (normalizasyon). Bakiye ile hareketler arasında tutarsızlık **oluşamaz**. Her rakamın kaynak belgesi izlenebilir |
-| Hareketler **silinmez/güncellenmez**, ters kayıtla düzeltilir | Muhasebe mantığı; denetim izi korunur |
+| Hareketler **silinmez/güncellenmez**, ters kayıtla düzeltilir böylece denetim izi korunur |
 | Sipariş **toplam tutarı saklanmaz**, satırlardan hesaplanır | Normalizasyon |
 | **Birim fiyat sipariş satırındadır**, ürün kartında değil | Fiyat zamanla değişir; siparişin verildiği anın bilgisidir |
 | `GoodsReceiptLine` tablosunda **`ItemId` yoktur** | Ürün `PurchaseOrderLine` üzerinden bulunur. Tekrar yazmak 3NF ihlali (geçişli bağımlılık) olur |
@@ -95,17 +122,9 @@ Controllers  →  Application (Services, DTOs, Interfaces, Exceptions)  →  Inf
 - **Database-first** yaklaşım; veri erişiminde **Dapper**. SQL üzerinde tam kontrol (kilitler, transaction, performans).
 - Tek proje içinde klasörlerle ayrılmış katmanlar. *Gerçek bir projede ayrı projelere (Domain / Application / Infrastructure / API) bölünür.*
 
-### SOLID
-| İlke | Uygulama |
-|---|---|
-| **S** — Single Responsibility | Controller sadece HTTP, Service iş kuralı, Repository SQL. Mal kabul kuralları ayrı bir `GoodsReceiptValidator` sınıfında |
-| **O** — Open/Closed | Hata yönetimi: Yeni bir hata türü (örn. 403) için sadece yeni bir `AppException` alt sınıfı yazılır, middleware değişmez |
-| **L** — Liskov Substitution | Tüm `AppException` alt sınıfları middleware'de atalarının yerine sorunsuz kullanılır; repository'ler arayüzleri üzerinden değiştirilebilir |
-| **I** — Interface Segregation | Tek bir dev `IRepository` yerine modül bazlı küçük arayüzler (`IItemRepository`, `IStockRepository`...) |
-| **D** — Dependency Inversion | Üst katmanlar somut sınıfları değil arayüzleri tanır (`IDbConnectionFactory`, `IGoodsReceiptValidator`). Bağımlılıkları DI container verir |
 
 ### Mal kabulde transaction ve eşzamanlılık
-Mal kabul, modülün en kritik işlemidir. Tek transaction içinde:
+Mal kabul,tek transaction içinde:
 1. Aynı irsaliye daha önce girilmiş mi? (`UPDLOCK, HOLDLOCK`) → 409
 2. Sipariş satırları **kilitlenir** (`UPDLOCK`)
 3. Güncel teslim miktarları **kilit altında** okunur
@@ -158,29 +177,15 @@ Detaylar: [`docs/api.md`](docs/api.md)
 
 ---
 
-## 🔭 İleride yapılabilecek iyileştirmeler
 
-- **Kimlik doğrulama ve yetkilendirme:** JWT / SSO, policy tabanlı yetki, depo kapsamı, `CreatedBy`/`ApprovedBy` alanları ([`docs/security.md`](docs/security.md))
-- **Mal kabul iptali** endpoint'i (ters kayıt: hareket tipi 5 şemada hazır)
-- **Fazla teslimat toleransı** (ürün bazında yüzde)
-- **Birim dönüşümü** (alış birimi ≠ stok birimi)
-- **Unit testler:** `GoodsReceiptValidator` veritabanından bağımsız olduğu için doğrudan test edilebilir; repository'ler için Testcontainers ile entegrasyon testleri
-- **Performans:** Hareket sayısı çok büyüdüğünde ürün × depo **bakiye özet tablosu** (sadece önbellek; ana kaynak yine hareketler) veya indexed view
-- Listeleme endpoint'lerinde **sayfalama** ve filtreleme
-- **Katmanların ayrı projelere bölünmesi**, Docker ile paketleme, CI pipeline
-- Sipariş **kısa kapama** ve **iptal** endpoint'leri
+## Yapay zeka kullanımı
 
----
+Bu çalışmada Claude asistanını bir danışman ve programlama aracı olarak kullandım.
 
-## 🤖 Yapay zeka kullanım beyanı
+- **Tasarım:** Varsayımlar (çoklu depo, kısmi teslimat, birim yapısı, durum yönetimi) ve normalizasyon kararları soru-cevap şeklinde tartışılarak alındı. Örneğin teslim tarihinin başlık yerine satırda olması gerektiği, "aynı ürün bir siparişte iki satırda olabilir mi?" tartışması sırasında ortaya çıktı ve şema buna göre düzeltildi.
+- **Kod üretimi:** SQL script'lerinin ve C# katmanlarının (DTO, repository, service, controller, middleware) taslakları asistan tarafından üretildi; her adımın gerekçesi açıklandı ve incelendi adım adım projeye eklendi.
+- **Test ve doğrulama:** Tüm script'leri kendi ortamımda (SQL Server 2022 Express, Visual Studio 2022) çalıştırdım; her endpoint'i Swagger üzerinden başarılı ve hatalı senaryolarla test ettim. 
+- **Destek senaryosu ve güvenlik (Bölüm 4-5):** Doküman taslakları asistan tarafından hazırlandı; ardından olası nedenler, kontrol adımları ve rol/yetki yapısı birlikte soru-cevap şeklinde gözden geçirildi.
+- **Dashboard:** Power BI raporunu view'lara bağlanarak kendim oluşturdum.
 
-> ⚠️ *Teslimden önce bu bölümü kendi kullanımınıza göre gözden geçirip düzenleyin.*
-
-Bu çalışmada **Anthropic'in Claude** asistanını bir **mentor ve eşli programlama (pair programming) aracı** olarak kullandım:
-
-- **Tasarım tartışması:** Varsayımlar (çoklu depo, kısmi teslimat, birim yapısı, durum yönetimi) ve normalizasyon kararları soru-cevap şeklinde tartışılarak alındı. Örneğin teslim tarihinin başlık yerine satırda olması gerektiği, "aynı ürün iki satırda olabilir mi?" tartışması sırasında ortaya çıktı ve şema buna göre düzeltildi.
-- **Kod üretimi:** SQL script'leri ve C# katmanlarının (DTO, repository, service, controller, middleware) ilk taslakları asistan tarafından üretildi; her adımın gerekçesi açıklandı.
-- **Test ve doğrulama:** Tüm script'leri kendi ortamımda (SQL Server 2022 Express, Visual Studio 2022) çalıştırdım, her endpoint'i Swagger üzerinden başarılı ve hatalı senaryolarla test ettim. Testlerde fark edilen bir sorun (aynı irsaliyenin tekrar girilmesinde 409 yerine 422 dönmesi) düzeltildi.
-- **Dokümantasyon:** API dokümantasyonu, destek senaryosu analizi, güvenlik ve dashboard dokümanlarının taslakları asistanla birlikte hazırlandı.
-
-Tüm tasarım kararlarının gerekçelerini anlayarak ve tartışarak ilerledim; çalışmadaki kararların sorumluluğu bana aittir.
+Tasarım kararlarının gerekçelerini anlayarak ve tartışarak ilerledim; çalışmadaki kararların sorumluluğu bana aittir.
